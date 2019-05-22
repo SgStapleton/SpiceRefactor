@@ -69,16 +69,35 @@ class NaifSpice():
         return spice.bods2c(self.spacecraft_name)
 
     @property
+    def target_id(self):
+        return spice.bods2c(self.target_name)
+
+    @property
     def focal2pixel_lines(self):
-        return list(spice.gdpool('INS{}_ITRANSL'.format(self.ikid), 0, 3))
+        return list(spice.gdpool('INS{}_ITRANSL'.format(self.fikid), 0, 3))
 
     @property
     def focal2pixel_samples(self):
-        return list(spice.gdpool('INS{}_ITRANSS'.format(self.ikid), 0, 3))
+        return list(spice.gdpool('INS{}_ITRANSS'.format(self.fikid), 0, 3))
 
     @property
     def _focal_length(self):
         return float(spice.gdpool('INS{}_FOCAL_LENGTH'.format(self.ikid), 0, 1)[0])
+        
+    @property
+    def pixel_size(self):
+        return spice.gdpool('INS{}_PIXEL_SIZE'.format(self.ikid), 0, 1)[0] * 0.001
+
+    @property
+    def _radii(self):
+        """
+        Returns
+        -------
+        : list<double>
+          Radius of all three axis of the target body
+        """
+        rad = spice.bodvrd(self.target_name, 'RADII', 3)
+        return rad[1]
 
     @property
     def _semimajor(self):
@@ -129,15 +148,16 @@ class NaifSpice():
     @property
     def _sensor_position(self):
         if not hasattr(self, '_position'):
-            ephem = self.ephemeris_time
             eph = []
-            for time in ephem:
+            current_et = self.starting_ephemeris_time
+            for i in range(self.number_of_ephemerides):
                 state, _ = spice.spkezr(self.spacecraft_name,
-                                        time,
+                                        current_et,
                                         self.reference_frame,
                                         'NONE',
                                         self.target_name,)
                 eph.append(state[:3])
+                current_et += getattr(self, "dt_ephemeris", 0)
             # By default, spice works in km
             self._position = [e * 1000 for e in eph]
         return self._position
@@ -145,15 +165,16 @@ class NaifSpice():
     @property
     def _sensor_velocity(self):
         if not hasattr(self, '_velocity'):
-            ephem = self.ephemeris_time
             eph_rates = []
-            for time in ephem:
+            current_et = self.starting_ephemeris_time
+            for i in range(self.number_of_ephemerides):
                 state, _ = spice.spkezr(self.spacecraft_name,
-                                        time,
+                                        current_et,
                                         self.reference_frame,
                                         'NONE',
                                         self.target_name,)
                 eph_rates.append(state[3:])
+                current_et += getattr(self, "dt_ephemeris", 0)
             # By default, spice works in km
             self._velocity = [e*1000 for e  in eph_rates]
         return self._velocity
@@ -161,36 +182,51 @@ class NaifSpice():
     @property
     def _sensor_orientation(self):
         if not hasattr(self, '_orientation'):
-            ephem = self.ephemeris_time
-
-            qua = np.empty((len(ephem), 4))
-            for i, time in enumerate(ephem):
+            current_et = self.starting_ephemeris_time
+            qua = np.empty((self.number_of_quaternions, 4))
+            for i in range(self.number_of_quaternions):
                 # Find the rotation matrix
                 camera2bodyfixed = spice.pxform(self.instrument_id,
                                                 self.reference_frame,
-                                                time)
+                                                current_et)
                 q = spice.m2q(camera2bodyfixed)
                 qua[i,:3] = q[1:]
                 qua[i,3] = q[0]
+                current_et += getattr(self, 'dt_quaternion', 0)
             self._orientation = qua
         return self._orientation.tolist()
 
     @property
-    def ephemeris_start_time(self):
-        return spice.scs2e(self.spacecraft_id, self.spacecraft_clock_start_count)
-
-    @property
-    def ephemeris_stop_time(self):
-        return spice.scs2e(self.spacecraft_id, self.spacecraft_clock_stop_count)
-
-    @property
-    def center_ephemeris_time(self):
-        return (self.ephemeris_start_time + self.ephemeris_stop_time)/2
-
-    @property
-    def detector_center_sample(self):
+    def _detector_center_sample(self):
         return float(spice.gdpool('INS{}_BORESIGHT_SAMPLE'.format(self.ikid), 0, 1)[0])
 
+
     @property
-    def detector_center_line(self):
+    def _detector_center_line(self):
         return float(spice.gdpool('INS{}_BORESIGHT_LINE'.format(self.ikid), 0, 1)[0])
+
+    @property
+    def fikid(self):
+        if isinstance(self, Framer):
+            fn = self.filter_number
+            if fn == 'N/A':
+                fn = 0
+        else:
+            fn = 0
+
+        return self.ikid - int(fn)
+
+    @property
+    def _naif_keywords(self):
+        naif_keywords = dict()
+        
+        naif_keywords['BODY{}_RADII'.format(self.target_id)] = self._radii
+        # naif_keywords['BODY_FRAME_CODE'] = 
+        naif_keywords['INS{}_PIXEL_SIZE'.format(self.ikid)] = self.pixel_size
+        naif_keywords['INS{}_ITRANSL'.format(self.ikid)] = self.focal2pixel_lines
+        naif_keywords['INS{}_ITRANSS'.format(self.ikid)] = self.focal2pixel_samples
+        naif_keywords['INS{}_FOCAL_LENGTH'.format(self.ikid)] = self._focal_length
+        naif_keywords['INS{}_BORESIGHT_SAMPLE'.format(self.ikid)] = self._detector_center_sample
+        naif_keywords['INS{}_BORESIGHT_LINE'.format(self.ikid)] = self._detector_center_line
+        
+        return naif_keywords
