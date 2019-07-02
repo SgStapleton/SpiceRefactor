@@ -28,7 +28,7 @@ def read_table_data(table_label, cube):
         The binary portion of the table data
     """
     cubehandle = open(cube, "rb")
-    cubehandle.seek(table_label['StartByte'])
+    cubehandle.seek(table_label['StartByte'] - 1)
     return cubehandle.read(table_label['Bytes'])
 
 def field_size(field_label):
@@ -269,17 +269,17 @@ class Driver():
 
 
     @property
-    def label(self):
-        if not hasattr(self, "_label"):
+    def _label(self):
+        if not hasattr(self, "_pvl_label"):
             if isinstance(self._file, pvl.PVLModule):
-                self._label = self._file
+                self._pvl_label = self._file
             try:
-                self._label = pvl.loads(self._file)
+                self._pvl_label = pvl.loads(self._file)
             except Exception:
-                self._label = pvl.load(self._file)
+                self._pvl_label = pvl.load(self._file)
             except:
                 raise ValueError("{} is not a valid label".format(self._file))
-        return self._label
+        return self._pvl_label
 
     @property
     def file(self):
@@ -423,7 +423,18 @@ class LineScanner():
 
     @property
     def center_ephemeris_time(self):
-        return (self.starting_ephemeris_time + self.ending_ephemeris_time)/2
+        """
+        The center ephemeris time for a fixed rate line scanner.
+        """
+        if not hasattr(self, '_center_ephemeris_time'):
+            halflines = self.image_lines / 2
+            center_sclock = self.starting_ephemeris_time + halflines * self.line_exposure_duration
+            self._center_ephemeris_time = center_sclock
+        return self._center_ephemeris_time
+
+    @property
+    def line_exposure_duration(self):
+        return self._label['LINE_EXPOSURE_DURATION'].value * 0.001  # Scale to seconds
 
 class Framer():
     @property
@@ -445,7 +456,7 @@ class Framer():
 
     @property
     def filter_number(self):
-        return self.label.get('FILTER_NUMBER', 0)
+        return self._label.get('FILTER_NUMBER', 0)
 
     @property
     def number_of_ephemerides(self):
@@ -456,6 +467,18 @@ class Framer():
     def number_of_quaternions(self):
         # always one for framers
         return 1
+
+    @property
+    def center_ephemeris_time(self):
+        """
+        The center ephemeris time for a framer.
+        """
+        center_time = self.starting_ephemeris_time + self.exposure_duration / 2
+        return center_time
+
+    @property
+    def exposure_duration(self):
+        return self._exposure_duration
 
 
 class PDS3():
@@ -471,14 +494,7 @@ class PDS3():
 
     @property
     def _focal_plane_tempature(self):
-        return self.label['FOCAL_PLANE_TEMPERATURE'].value
-
-    @property
-    def line_exposure_duration(self):
-        try:
-            return self.label['LINE_EXPOSURE_DURATION'].value * 0.001  # Scale to seconds
-        except:
-            return np.nan
+        return self._label['FOCAL_PLANE_TEMPERATURE'].value
 
     @property
     def instrument_id(self):
@@ -486,15 +502,15 @@ class PDS3():
 
     @property
     def start_time(self):
-        return self.label['START_TIME']
+        return self._label['START_TIME']
 
     @property
     def image_lines(self):
-        return self.label['IMAGE']['LINES']
+        return self._label['IMAGE']['LINES']
 
     @property
     def image_samples(self):
-        return self.label['IMAGE']['LINE_SAMPLES']
+        return self._label['IMAGE']['LINE_SAMPLES']
 
     @property
     def interpolation_method(self):
@@ -513,29 +529,22 @@ class PDS3():
           target name
         """
 
-        return self.label['TARGET_NAME']
+        return self._label['TARGET_NAME']
 
     @property
     def _target_id(self):
-        return spice.bodn2c(self.label['TARGET_NAME'])
+        return spice.bodn2c(self._label['TARGET_NAME'])
 
     @property
     def starting_ephemeris_time(self):
         if not hasattr(self, '_starting_ephemeris_time'):
-            sclock = self.label['SPACECRAFT_CLOCK_START_COUNT']
+            sclock = self._label['SPACECRAFT_CLOCK_START_COUNT']
             self._starting_ephemeris_time = spice.scs2e(self.spacecraft_id, sclock)
         return self._starting_ephemeris_time
 
     @property
-    def exposure_duration(self):
-        try:
-            return self.label['EXPOSURE_DURATION'].value * 0.001  # Scale to seconds
-        except:
-            return np.nan
-
-    @property
     def spacecraft_clock_stop_count(self):
-        sc = self.label.get('SPACECRAFT_CLOCK_STOP_COUNT', None)
+        sc = self._label.get('SPACECRAFT_CLOCK_STOP_COUNT', None)
         if sc == 'N/A':
             sc = None
         return sc
@@ -559,11 +568,15 @@ class PDS3():
         : str
           Spacecraft name
         """
-        return self.label['MISSION_NAME']
+        return self._label['MISSION_NAME']
 
     @property
     def detector_line_summing(self):
-        return self.label.get('SAMPLING_FACTOR', 1)
+        return self._label.get('SAMPLING_FACTOR', 1)
+
+    @property
+    def _exposure_duration(self):
+        return self._label['EXPOSURE_DURATION'].value * 0.001
 
 
 class Spice():
@@ -752,17 +765,6 @@ class Spice():
         return float(spice.gdpool('INS{}_BORESIGHT_LINE'.format(self.ikid), 0, 1)[0])
 
     @property
-    def center_ephemeris_time(self):
-        """
-        The center ephemeris time for a fixed rate line scanner.
-        """
-        if not hasattr(self, '_center_ephemeris_time'):
-            halflines = self.image_lines / 2
-            center_sclock = self.starting_ephemeris_time + halflines * self.line_exposure_duration
-            self._center_ephemeris_time = center_sclock
-        return self._center_ephemeris_time
-
-    @property
     def fikid(self):
         if isinstance(self, Framer):
             fn = self.filter_number
@@ -778,7 +780,7 @@ class Isis3():
 
     @property
     def start_time(self):
-        return self.label['IsisCube']['Instrument']['StartTime']
+        return self._label['IsisCube']['Instrument']['StartTime']
 
     @property
     def spacecraft_name(self):
@@ -791,7 +793,7 @@ class Isis3():
         : str
           Spacecraft name
         """
-        return self.label['IsisCube']['Instrument']['SpacecraftName']
+        return self._label['IsisCube']['Instrument']['SpacecraftName']
 
     @property
     def image_lines(self):
@@ -801,7 +803,7 @@ class Isis3():
         : int
           Number of lines in image
         """
-        return self.label['IsisCube']['Core']['Dimensions']['Lines']
+        return self._label['IsisCube']['Core']['Dimensions']['Lines']
 
     @property
     def image_samples(self):
@@ -811,11 +813,7 @@ class Isis3():
         : int
           Number of samples in image
         """
-        return self.label['IsisCube']['Core']['Dimensions']['Samples']
-
-    @property
-    def _exposure_duration(self):
-        return self.label['IsisCube']['Instrument']['ExposureDuration'].value * 0.001 # Scale to seconds
+        return self._label['IsisCube']['Core']['Dimensions']['Samples']
 
     @property
     def target_name(self):
@@ -828,14 +826,18 @@ class Isis3():
         : str
           Target name
         """
-        return self.label['IsisCube']['Instrument']['TargetName']
+        return self._label['IsisCube']['Instrument']['TargetName']
 
     @property
     def starting_ephemeris_time(self):
         if not hasattr(self, '_starting_ephemeris_time'):
-            sclock = self.label['IsisCube']['Archive']['SpacecraftClockStartCount']
+            sclock = self._label['IsisCube']['Archive']['SpacecraftClockStartCount']
             self._starting_ephemeris_time = spice.scs2e(self.spacecraft_id, sclock).value
         return self._starting_ephemeris_time
+
+    @property
+    def _exposure_duration(self):
+        return self._label['IsisCube']['Instrument']['ExposureDuration'].value * 0.001
 
 
 class IsisSpice(Isis3):
@@ -881,7 +883,7 @@ class IsisSpice(Isis3):
 
     def _init_tables(self):
         # init tables
-        for table in self.label.getlist('Table'):
+        for table in self._label.getlist('Table'):
             binary_data = read_table_data(table, self._file)
             field_data = parse_table_data(table, binary_data)
             if table['Name'] == 'InstrumentPointing':
@@ -894,7 +896,7 @@ class IsisSpice(Isis3):
                 self._sun_position_table = parse_position_table(field_data)
 
     @property
-    def label(self):
+    def _label(self):
         """
         Loads a PVL from from the _file attribute and
         parses the binary table data.
@@ -906,10 +908,10 @@ class IsisSpice(Isis3):
         """
         if not hasattr(self, "_label"):
             try:
-                self._label = pvl.load(self.file)
+                self._pvl_label = pvl.load(self.file)
             except:
                 raise ValueError("{} is not a valid label".format(self.file))
-        return self._label
+        return self._pvl_label
 
     def __enter__(self):
         """
@@ -1017,9 +1019,9 @@ class IsisSpice(Isis3):
             The ISIS cube label
 
         """
-        if 'IsisCube' not in self.label:
+        if 'IsisCube' not in self._label:
             raise ValueError("Could not find ISIS cube label.")
-        return self.label['IsisCube']
+        return self._label['IsisCube']
 
     @property
     def _kernels_group(self):
@@ -1261,20 +1263,30 @@ class IsisSpice(Isis3):
         PVLModule :
             The stored NAIF keyword values
         """
-        if 'NaifKeywords' not in self.label:
+        if 'NaifKeywords' not in self._label:
             raise ValueError("Could not find NaifKeywords in label.")
-        return self.label['NaifKeywords']
+        return self._label['NaifKeywords']
 
     @property
     def _odtk(self):
-        return self.label["NaifKeywords"]["INS{}_OD_K".format(self.ikid)]
+        return self._label["NaifKeywords"]["INS{}_OD_K".format(self.ikid)]
 
 
 class RadialDistortion():
     @property
     def optical_distortion(self):
         return {
-            "Radial": {
+            "radial": {
                 "coefficients" : self._odtk
+            }
+        }
+
+class TransverseDistortion():
+    @property
+    def optical_distortion(self):
+        return {
+            "transverse": {
+                "x" : self._odtx,
+                "y" : self._odty
             }
         }

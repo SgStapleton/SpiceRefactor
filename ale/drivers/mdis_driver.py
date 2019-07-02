@@ -89,6 +89,14 @@ class MdisSpice(Driver, Spice, Framer):
         """
         return int(spice.gdpool('INS{}_FPUBIN_START_LINE'.format(self.ikid), 0, 1)[0])
 
+    @property
+    def _detector_center_sample(self):
+        return float(spice.gdpool('INS{}_BORESIGHT'.format(self.ikid), 0, 3)[0])
+
+
+    @property
+    def _detector_center_line(self):
+        return float(spice.gdpool('INS{}_BORESIGHT'.format(self.ikid), 0, 3)[1])
 
 class MdisPDS3Driver(PDS3, MdisSpice):
     """
@@ -107,14 +115,17 @@ class MdisPDS3Driver(PDS3, MdisSpice):
         : str
           instrument id
         """
-        return self.id_lookup[self.label['INSTRUMENT_ID']]
-
+        return self.id_lookup[self._label['INSTRUMENT_ID']]
 
 class MdisIsis3Driver(Isis3, MdisSpice):
     """
     Driver for reading MDIS ISIS3 Labels. These are Labels that have been ingested
     into ISIS from PDS EDR images but have not been spiceinit'd yet.
     """
+
+    @property
+    def ikid(self):
+        return int(self._label["IsisCube"]["Kernels"]["NaifIkCode"])
 
     @property
     def instrument_id(self):
@@ -128,10 +139,10 @@ class MdisIsis3Driver(Isis3, MdisSpice):
         : str
           instrument id
         """
-        return self.id_lookup[self.label['IsisCube']['Instrument']['InstrumentId']]
+        return self.id_lookup[self._label['IsisCube']['Instrument']['InstrumentId']]
 
     @property
-    def focal_plane_tempature(self):
+    def _focal_plane_tempature(self):
         """
         Acquires focal plane tempature from a PDS3 label. Used exclusively in
         computing focal length.
@@ -141,4 +152,11 @@ class MdisIsis3Driver(Isis3, MdisSpice):
         : double
           focal plane tempature
         """
-        return self.label['IsisCube']['Instrument']['FocalPlaneTemperature'].value
+        return self._label['IsisCube']['Instrument']['FocalPlaneTemperature'].value
+
+    @property
+    def starting_ephemeris_time(self):
+        if not hasattr(self, '_starting_ephemeris_time'):
+            sclock = self._label['IsisCube']['Archive']['SpacecraftClockStartCount']
+            self._starting_ephemeris_time = spice.scs2e(self.spacecraft_id, sclock)
+        return self._starting_ephemeris_time
